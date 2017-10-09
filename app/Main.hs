@@ -1,6 +1,10 @@
 module Main where
 
-import Lib
+import           System.Environment (getArgs)
+
+import Lib (runNode)
 
 main :: IO ()
-main = someFunc
+main = do
+  [host, port] <- getArgs
+  runNode host port
