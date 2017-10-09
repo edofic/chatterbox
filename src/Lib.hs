@@ -2,12 +2,12 @@ module Lib
 ( runNode
 ) where
 
-import           Control.Concurrent (forkIO)
 import           Control.Distributed.Process.Backend.SimpleLocalnet
 import           Control.Distributed.Process.Node (LocalNode, initRemoteTable, runProcess)
 import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
 import qualified Control.Distributed.Process as P
+
 
 runNode :: String -> String -> IO ()
 runNode host port = do
@@ -33,7 +33,6 @@ pingerStep backend node msg = do
   peers   <- findPeers backend 1000000
   putStrLn $ "found " ++ show (length peers) ++ " peers"
   runProcess node $ do
-    nodeId <- P.getSelfNode
     pingPeers peers msg
     liftIO $ putStrLn ""
 
