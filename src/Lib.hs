@@ -2,47 +2,80 @@
 
 module Lib
 ( Config(..)
+, ConfigPeers(..)
 , runNode
 ) where
 
+import           Control.Concurrent (forkIO, threadDelay)
 import           Control.Distributed.Process.Backend.SimpleLocalnet
 import           Control.Distributed.Process.Node (LocalNode, initRemoteTable, runProcess)
 import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
+import           Data.IORef
+import           Data.Aeson (eitherDecode')
+import           Network.Transport (EndPointAddress(EndPointAddress))
 import qualified Control.Distributed.Process as P
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Lazy as BS
 
 
 data Config = Config
   { host :: String
   , port :: String
+  , peersConfig :: ConfigPeers
   } deriving (Eq, Show)
 
+data ConfigPeers = ConfigPeersAuto
+                 | ConfigPeersFile FilePath
+                 deriving (Eq, Show)
+
 runNode :: Config -> IO ()
-runNode (Config {..}) = do
+runNode config@(Config {..}) = do
   let msg = "hello from " ++ host ++ ":" ++ port
+  putStrLn $ "Using config: " ++ show config
 
   backend <- initializeBackend host port initRemoteTable
   node    <- newLocalNode backend
+  peersRef <- loadPeers peersConfig backend
+
 
   runProcess node registerReceiver
-  forever $ pingerStep backend node msg
+  forever $ do
+    pingerStep peersRef node msg
+    threadDelay 1000000
+
+
+loadPeers :: ConfigPeers -> Backend -> IO (IORef [P.NodeId])
+loadPeers ConfigPeersAuto backend = do
+  peersRef <- newIORef []
+  _ <- forkIO $ forever $ do
+    peers <- findPeers backend 1000000
+    writeIORef peersRef peers
+    putStrLn $ "found " ++ show (length peers) ++ " peers"
+  return peersRef
+loadPeers (ConfigPeersFile peersFile) _ = do
+  rawJson <- BS.readFile peersFile
+  case eitherDecode' rawJson of
+    Left err -> error $ "Cannot read " ++ peersFile ++ " : " ++ err
+    Right rawPeers -> newIORef $ map packPeer rawPeers
+  where
+    packPeer = P.NodeId . EndPointAddress . BSC.pack
 
 
 registerReceiver :: P.Process ()
 registerReceiver = do
+  selfNodeId <- P.getSelfNode
+  liftIO $ putStrLn $ "receiving on " ++ show selfNodeId
   pid <- P.spawnLocal $ forever $ do
     msg <- P.expect :: P.Process String
     liftIO $ putStrLn $ "received: " ++ msg
   P.register "worker" pid
 
 
-pingerStep :: Backend -> LocalNode -> String -> IO ()
-pingerStep backend node msg = do
-  peers   <- findPeers backend 1000000
-  putStrLn $ "found " ++ show (length peers) ++ " peers"
-  runProcess node $ do
-    pingPeers peers msg
-    liftIO $ putStrLn ""
+pingerStep :: IORef [P.NodeId] -> LocalNode -> String -> IO ()
+pingerStep peersRef node msg = do
+  peers <- readIORef peersRef
+  runProcess node $ pingPeers peers msg
 
 
 pingPeers :: (Foldable t) => t P.NodeId -> String -> P.Process ()
