@@ -1,5 +1,8 @@
+{-# LANGUAGE RecordWildCards #-}
+
 module Lib
-( runNode
+( Config(..)
+, runNode
 ) where
 
 import           Control.Distributed.Process.Backend.SimpleLocalnet
@@ -9,8 +12,13 @@ import           Control.Monad.IO.Class (liftIO)
 import qualified Control.Distributed.Process as P
 
 
-runNode :: String -> String -> IO ()
-runNode host port = do
+data Config = Config
+  { host :: String
+  , port :: String
+  } deriving (Eq, Show)
+
+runNode :: Config -> IO ()
+runNode (Config {..}) = do
   let msg = "hello from " ++ host ++ ":" ++ port
 
   backend <- initializeBackend host port initRemoteTable
