@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Lib
@@ -6,6 +7,7 @@ module Lib
 , runNode
 ) where
 
+import           Data.Binary (Binary)
 import           Control.Concurrent (forkIO, threadDelay)
 import           Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar)
 import           Control.Distributed.Process.Backend.SimpleLocalnet
@@ -19,6 +21,7 @@ import           System.Log.Logger (debugM, rootLoggerName)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
+import           GHC.Generics (Generic)
 
 
 data Config = Config
@@ -32,6 +35,19 @@ data ConfigPeers = ConfigPeersAuto
                  deriving (Eq, Show)
 
 
+data AppState = AppState
+  { msg :: String
+  , readPeers :: IO [P.NodeId]
+  }
+
+
+data Msg = Incoming String
+         | Tick
+         deriving (Eq, Show, Generic)
+
+instance Binary Msg
+
+
 runNode :: Config -> IO ()
 runNode config@(Config {..}) = do
   let msg = "hello from " ++ host ++ ":" ++ port
@@ -42,10 +58,15 @@ runNode config@(Config {..}) = do
   selfNodeId <- runProcess' node P.getSelfNode
   readPeers <- loadPeers peersConfig backend selfNodeId
 
-  runProcess node $ registerReceiver
-  forever $ do
-    pingerStep readPeers node msg
-    threadDelay 1000000
+  runProcess node $ do
+    registerReceiver
+    _ <- P.spawnLocal $ forever $ do
+      liftIO $ threadDelay 1000000
+      P.nsend "worker" Tick
+
+    let initialState = AppState msg readPeers
+    P.getSelfPid >>= P.register "worker"
+    mainLoop initialState
 
 
 loadPeers :: ConfigPeers -> Backend -> P.NodeId -> IO (IO [P.NodeId])
@@ -66,30 +87,46 @@ loadPeers (ConfigPeersFile peersFile) _ selfNodeId = do
     packPeer = P.NodeId . EndPointAddress . BSC.pack
 
 
+mainLoop :: AppState -> P.Process ()
+mainLoop state = do
+  msg <- P.expect
+  state' <- update msg state
+  mainLoop state'
+
+
+update :: Msg -> AppState -> P.Process AppState
+update Tick state@AppState{..} = do
+  pingerStep readPeers msg
+  return state
+update (Incoming msg) state = do
+  liftIO $ debugM rootLoggerName $ "received :" ++ msg
+  return state
+
+
 registerReceiver :: P.Process ()
 registerReceiver = do
   selfNodeId <- P.getSelfNode
   liftIO $ debugM rootLoggerName $ "receiving on " ++ show selfNodeId
   pid <- P.spawnLocal receiver
-  P.register "worker" pid
+  P.register "listener" pid
 
 
 receiver :: P.Process ()
-receiver = forever $ do
-  msg <- P.expect :: P.Process String
-  liftIO $ debugM rootLoggerName $ "received: " ++ msg
+receiver  = forever $ do
+  msg <- P.expect
+  P.nsend "worker" $ Incoming msg
 
 
-pingerStep :: IO [P.NodeId] -> LocalNode -> String -> IO ()
-pingerStep readPeers node msg = do
-  peers <- readPeers
-  runProcess node $ pingPeers peers msg
+pingerStep :: IO [P.NodeId] -> String -> P.Process ()
+pingerStep readPeers msg = do
+  peers <- liftIO $ readPeers
+  pingPeers peers msg
 
 
 pingPeers :: (Foldable t) => t P.NodeId -> String -> P.Process ()
 pingPeers peers msg = forM_ peers $ \peer -> do
   liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-  P.nsendRemote peer "worker" msg
+  P.nsendRemote peer "listener" msg
 
 
 runProcess' :: LocalNode -> P.Process a -> IO a
