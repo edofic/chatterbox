@@ -11,9 +11,10 @@ import           Control.Distributed.Process.Backend.SimpleLocalnet
 import           Control.Distributed.Process.Node (LocalNode, initRemoteTable, runProcess)
 import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
-import           Data.IORef
 import           Data.Aeson (eitherDecode')
+import           Data.IORef
 import           Network.Transport (EndPointAddress(EndPointAddress))
+import           System.Log.Logger (debugM, rootLoggerName)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
@@ -32,7 +33,7 @@ data ConfigPeers = ConfigPeersAuto
 runNode :: Config -> IO ()
 runNode config@(Config {..}) = do
   let msg = "hello from " ++ host ++ ":" ++ port
-  putStrLn $ "Using config: " ++ show config
+  debugM rootLoggerName $ "Using config: " ++ show config
 
   backend <- initializeBackend host port initRemoteTable
   node    <- newLocalNode backend
@@ -51,7 +52,7 @@ loadPeers ConfigPeersAuto backend = do
   _ <- forkIO $ forever $ do
     peers <- findPeers backend 1000000
     writeIORef peersRef peers
-    putStrLn $ "found " ++ show (length peers) ++ " peers"
+    debugM rootLoggerName $ "found " ++ show (length peers) ++ " peers"
   return peersRef
 loadPeers (ConfigPeersFile peersFile) _ = do
   rawJson <- BS.readFile peersFile
@@ -65,10 +66,10 @@ loadPeers (ConfigPeersFile peersFile) _ = do
 registerReceiver :: P.Process ()
 registerReceiver = do
   selfNodeId <- P.getSelfNode
-  liftIO $ putStrLn $ "receiving on " ++ show selfNodeId
+  liftIO $ debugM rootLoggerName $ "receiving on " ++ show selfNodeId
   pid <- P.spawnLocal $ forever $ do
     msg <- P.expect :: P.Process String
-    liftIO $ putStrLn $ "received: " ++ msg
+    liftIO $ debugM rootLoggerName $ "received: " ++ msg
   P.register "worker" pid
 
 
@@ -80,5 +81,5 @@ pingerStep peersRef node msg = do
 
 pingPeers :: (Foldable t) => t P.NodeId -> String -> P.Process ()
 pingPeers peers msg = forM_ peers $ \peer -> do
-  liftIO $ putStrLn $ "sending to " ++ show peer
+  liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
   P.nsendRemote peer "worker" msg
