@@ -3,41 +3,35 @@
 
 module Lib
 ( Config(..)
-, ConfigPeers(..)
 , runNode
 ) where
 
-import           Data.Binary (Binary)
-import           Control.Concurrent (forkIO, threadDelay)
+import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar)
-import           Control.Distributed.Process.Backend.SimpleLocalnet
-import           Control.Distributed.Process.Node (LocalNode, initRemoteTable, runProcess)
+import           Control.Distributed.Process.Node (LocalNode, initRemoteTable, runProcess, newLocalNode)
 import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (eitherDecode')
-import           Data.IORef
+import           Data.Binary (Binary)
+import           GHC.Generics (Generic)
 import           Network.Transport (EndPointAddress(EndPointAddress))
+import           Network.Transport.TCP (createTransport, defaultTCPParameters)
 import           System.Log.Logger (debugM, rootLoggerName)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
-import           GHC.Generics (Generic)
 
 
 data Config = Config
   { host :: String
   , port :: String
-  , peersConfig :: ConfigPeers
+  , peersFile :: FilePath
   } deriving (Eq, Show)
-
-data ConfigPeers = ConfigPeersAuto
-                 | ConfigPeersFile FilePath
-                 deriving (Eq, Show)
 
 
 data AppState = AppState
   { msgStream :: [Integer]
-  , readPeers :: IO [P.NodeId]
+  , peerList :: [P.NodeId]
   }
 
 
@@ -53,10 +47,12 @@ runNode config@(Config {..}) = do
   let msgStream = [1..]
   debugM rootLoggerName $ "Using config: " ++ show config
 
-  backend <- initializeBackend host port initRemoteTable
-  node    <- newLocalNode backend
+  node <- createTransport host port defaultTCPParameters >>= \r -> case r of
+    Right transport -> newLocalNode transport initRemoteTable
+    Left  err       -> error $ show err
+
   selfNodeId <- runProcess' node P.getSelfNode
-  readPeers <- loadPeers peersConfig backend selfNodeId
+  peerList <- loadPeers peersFile selfNodeId
 
   runProcess node $ do
     registerReceiver
@@ -64,25 +60,17 @@ runNode config@(Config {..}) = do
       liftIO $ threadDelay 1000000
       P.nsend "worker" Tick
 
-    let initialState = AppState msgStream readPeers
+    let initialState = AppState msgStream peerList
     P.getSelfPid >>= P.register "worker"
     mainLoop initialState
 
 
-loadPeers :: ConfigPeers -> Backend -> P.NodeId -> IO (IO [P.NodeId])
-loadPeers ConfigPeersAuto backend selfNodeId = do
-  peersRef <- newIORef []
-  _ <- forkIO $ forever $ do
-    peers <- findPeers backend 1000000
-    let peers' = filter (selfNodeId /=) peers
-    writeIORef peersRef peers'
-    debugM rootLoggerName $ "found " ++ show (length peers') ++ " peers"
-  return $ readIORef peersRef
-loadPeers (ConfigPeersFile peersFile) _ selfNodeId = do
+loadPeers :: FilePath -> P.NodeId -> IO [P.NodeId]
+loadPeers peersFile selfNodeId = do
   rawJson <- BS.readFile peersFile
   case eitherDecode' rawJson of
     Left err -> error $ "Cannot read " ++ peersFile ++ " : " ++ err
-    Right rawPeers -> return $ return $ filter (selfNodeId /=) $ map packPeer rawPeers
+    Right rawPeers -> return $ filter (selfNodeId /=) $ map packPeer rawPeers
   where
     packPeer = P.NodeId . EndPointAddress . BSC.pack
 
@@ -96,9 +84,8 @@ mainLoop state = do
 
 update :: Msg -> AppState -> P.Process AppState
 update Tick state@AppState{..} = do
-  peers <- liftIO $ readPeers
   let msg : msgStream' = msgStream
-  forM_ peers $ \peer -> do
+  forM_ peerList $ \peer -> do
     liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
     P.nsendRemote peer "listener" (show msg)
   return $ state { msgStream = msgStream' }
