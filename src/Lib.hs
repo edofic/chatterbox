@@ -36,7 +36,7 @@ data ConfigPeers = ConfigPeersAuto
 
 
 data AppState = AppState
-  { msg :: String
+  { msgStream :: [Integer]
   , readPeers :: IO [P.NodeId]
   }
 
@@ -50,7 +50,7 @@ instance Binary Msg
 
 runNode :: Config -> IO ()
 runNode config@(Config {..}) = do
-  let msg = "hello from " ++ host ++ ":" ++ port
+  let msgStream = [1..]
   debugM rootLoggerName $ "Using config: " ++ show config
 
   backend <- initializeBackend host port initRemoteTable
@@ -64,7 +64,7 @@ runNode config@(Config {..}) = do
       liftIO $ threadDelay 1000000
       P.nsend "worker" Tick
 
-    let initialState = AppState msg readPeers
+    let initialState = AppState msgStream readPeers
     P.getSelfPid >>= P.register "worker"
     mainLoop initialState
 
@@ -96,8 +96,12 @@ mainLoop state = do
 
 update :: Msg -> AppState -> P.Process AppState
 update Tick state@AppState{..} = do
-  pingerStep readPeers msg
-  return state
+  peers <- liftIO $ readPeers
+  let msg : msgStream' = msgStream
+  forM_ peers $ \peer -> do
+    liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
+    P.nsendRemote peer "listener" (show msg)
+  return $ state { msgStream = msgStream' }
 update (Incoming msg) state = do
   liftIO $ debugM rootLoggerName $ "received :" ++ msg
   return state
@@ -115,18 +119,6 @@ receiver :: P.Process ()
 receiver  = forever $ do
   msg <- P.expect
   P.nsend "worker" $ Incoming msg
-
-
-pingerStep :: IO [P.NodeId] -> String -> P.Process ()
-pingerStep readPeers msg = do
-  peers <- liftIO $ readPeers
-  pingPeers peers msg
-
-
-pingPeers :: (Foldable t) => t P.NodeId -> String -> P.Process ()
-pingPeers peers msg = forM_ peers $ \peer -> do
-  liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-  P.nsendRemote peer "listener" msg
 
 
 runProcess' :: LocalNode -> P.Process a -> IO a
