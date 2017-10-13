@@ -31,14 +31,19 @@ data Config = Config
 
 data AppState = AppState
   { msgStream :: [Integer]
+  , selfNodeId :: P.NodeId
   , peerList :: [P.NodeId]
   }
 
 
-data Msg = Incoming String
+data RemoteMsg = RemoteMsg P.NodeId Integer deriving (Eq, Show, Generic)
+
+data Msg = Incoming RemoteMsg
          | Tick
          deriving (Eq, Show, Generic)
 
+
+instance Binary RemoteMsg
 instance Binary Msg
 
 
@@ -60,7 +65,7 @@ runNode config@(Config {..}) = do
       liftIO $ threadDelay 1000000
       P.nsend "worker" Tick
 
-    let initialState = AppState msgStream peerList
+    let initialState = AppState msgStream selfNodeId peerList
     P.getSelfPid >>= P.register "worker"
     mainLoop initialState
 
@@ -87,10 +92,10 @@ update Tick state@AppState{..} = do
   let msg : msgStream' = msgStream
   forM_ peerList $ \peer -> do
     liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-    P.nsendRemote peer "listener" (show msg)
+    P.nsendRemote peer "listener" $ RemoteMsg selfNodeId msg
   return $ state { msgStream = msgStream' }
 update (Incoming msg) state = do
-  liftIO $ debugM rootLoggerName $ "received :" ++ msg
+  liftIO $ debugM rootLoggerName $ "received :" ++ show msg
   return state
 
 
