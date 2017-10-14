@@ -32,17 +32,19 @@ data Config = Config
 
 data LoopConfig = LoopConfig
   { selfNodeId :: P.NodeId
-  , peerList :: [P.NodeId]
+  , peerList :: Set.Set P.NodeId
   }
 
 
-data AppState = AppState
-  { msgStream :: [Integer]
-  , received :: Set.Set RemoteMsg
-  }
+data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
+              | Running { msgStream :: [Integer]
+                        , received :: Set.Set RemoteMsg
+                        }
 
 
-data RemoteMsg = RemoteMsg P.NodeId Integer deriving (Eq, Show, Ord, Generic)
+data RemoteMsg = Connect P.NodeId
+               | Ping P.NodeId Integer
+               deriving (Eq, Show, Ord, Generic)
 
 data Msg = Incoming RemoteMsg
          | Tick
@@ -55,7 +57,6 @@ instance Binary Msg
 
 runNode :: Config -> IO ()
 runNode config@(Config {..}) = do
-  let msgStream = [1..]
   debugM rootLoggerName $ "Using config: " ++ show config
 
   node <- createTransport host port defaultTCPParameters >>= \r -> case r of
@@ -72,17 +73,17 @@ runNode config@(Config {..}) = do
       P.nsend "worker" Tick
 
     let loopConfig = LoopConfig selfNodeId peerList
-        initialState = AppState msgStream Set.empty
+        initialState = Connecting Set.empty
     P.getSelfPid >>= P.register "worker"
     mainLoop loopConfig initialState
 
 
-loadPeers :: FilePath -> P.NodeId -> IO [P.NodeId]
+loadPeers :: FilePath -> P.NodeId -> IO (Set.Set P.NodeId)
 loadPeers peersFile selfNodeId = do
   rawJson <- BS.readFile peersFile
   case eitherDecode' rawJson of
     Left err -> error $ "Cannot read " ++ peersFile ++ " : " ++ err
-    Right rawPeers -> return $ filter (selfNodeId /=) $ map packPeer rawPeers
+    Right rawPeers -> return $ Set.fromList $ filter (selfNodeId /=) $ map packPeer rawPeers
   where
     packPeer = P.NodeId . EndPointAddress . BSC.pack
 
@@ -95,14 +96,34 @@ mainLoop loopConfig state = do
 
 
 update :: Msg -> LoopConfig -> AppState -> P.Process AppState
-update Tick LoopConfig{..} state@AppState{..} = do
+
+update Tick LoopConfig{..} state@Connecting{..} = do
+  liftIO $ debugM rootLoggerName $ "connecting ... "
+  forM_ peerList $ \peer ->
+    P.nsendRemote peer "listener" $ Connect selfNodeId
+  return state
+
+update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
+  liftIO $ debugM rootLoggerName $ "connected to "  ++ show nodeId
+  let connectedNodes' = nodeId `Set.insert` connectedNodes
+  return $ if connectedNodes' == Set.delete selfNodeId peerList
+           then  Running [1..] Set.empty
+           else state { connectedNodes = connectedNodes' }
+  where
+    nodeId = case incoming of
+      Connect sender -> sender
+      Ping sender _ -> sender
+
+
+update Tick LoopConfig{..} state@Running{..} = do
   let msg : msgStream' = msgStream
   forM_ peerList $ \peer -> do
     liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-    P.nsendRemote peer "listener" $ RemoteMsg selfNodeId msg
+    P.nsendRemote peer "listener" $ Ping selfNodeId msg
   return $ state { msgStream = msgStream' }
-update (Incoming msg) LoopConfig{..} state = do
-  liftIO $ debugM rootLoggerName $ "received :" ++ show msg
+
+update (Incoming msg) LoopConfig{..} state@Running{} = do
+  liftIO $ debugM rootLoggerName $ "received: " ++ show msg
   return $ state { received = Set.insert msg (received state) }
 
 
