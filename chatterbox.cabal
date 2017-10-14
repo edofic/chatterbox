@@ -20,6 +20,7 @@ library
                      , aeson
                      , binary
                      , bytestring
+                     , containers
                      , distributed-process
                      , hslogger
                      , network-transport

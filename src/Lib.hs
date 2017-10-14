@@ -20,6 +20,7 @@ import           System.Log.Logger (debugM, rootLoggerName)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
+import qualified Data.Set as Set
 
 
 data Config = Config
@@ -29,14 +30,19 @@ data Config = Config
   } deriving (Eq, Show)
 
 
-data AppState = AppState
-  { msgStream :: [Integer]
-  , selfNodeId :: P.NodeId
+data LoopConfig = LoopConfig
+  { selfNodeId :: P.NodeId
   , peerList :: [P.NodeId]
   }
 
 
-data RemoteMsg = RemoteMsg P.NodeId Integer deriving (Eq, Show, Generic)
+data AppState = AppState
+  { msgStream :: [Integer]
+  , received :: Set.Set RemoteMsg
+  }
+
+
+data RemoteMsg = RemoteMsg P.NodeId Integer deriving (Eq, Show, Ord, Generic)
 
 data Msg = Incoming RemoteMsg
          | Tick
@@ -65,9 +71,10 @@ runNode config@(Config {..}) = do
       liftIO $ threadDelay 1000000
       P.nsend "worker" Tick
 
-    let initialState = AppState msgStream selfNodeId peerList
+    let loopConfig = LoopConfig selfNodeId peerList
+        initialState = AppState msgStream Set.empty
     P.getSelfPid >>= P.register "worker"
-    mainLoop initialState
+    mainLoop loopConfig initialState
 
 
 loadPeers :: FilePath -> P.NodeId -> IO [P.NodeId]
@@ -80,23 +87,23 @@ loadPeers peersFile selfNodeId = do
     packPeer = P.NodeId . EndPointAddress . BSC.pack
 
 
-mainLoop :: AppState -> P.Process ()
-mainLoop state = do
+mainLoop :: LoopConfig -> AppState -> P.Process ()
+mainLoop loopConfig state = do
   msg <- P.expect
-  state' <- update msg state
-  mainLoop state'
+  state' <- update msg loopConfig state
+  mainLoop loopConfig state'
 
 
-update :: Msg -> AppState -> P.Process AppState
-update Tick state@AppState{..} = do
+update :: Msg -> LoopConfig -> AppState -> P.Process AppState
+update Tick LoopConfig{..} state@AppState{..} = do
   let msg : msgStream' = msgStream
   forM_ peerList $ \peer -> do
     liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
     P.nsendRemote peer "listener" $ RemoteMsg selfNodeId msg
   return $ state { msgStream = msgStream' }
-update (Incoming msg) state = do
+update (Incoming msg) LoopConfig{..} state = do
   liftIO $ debugM rootLoggerName $ "received :" ++ show msg
-  return state
+  return $ state { received = Set.insert msg (received state) }
 
 
 registerReceiver :: P.Process ()
