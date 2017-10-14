@@ -27,3 +27,5 @@ configParser = Config
   <$> strOption (long "host" <> short 'h' <> metavar "HOST" <> value "127.0.0.1")
   <*> strOption (long "port" <> short 'p' <> metavar "PORT" <> value "3000")
   <*> strOption (long "peer-config-file" <> value "peers.json")
+  <*> option auto (long "send-for" <> metavar "l" <> value 10)
+  <*> option auto (long "wait-for" <> metavar "k" <> value 1)
