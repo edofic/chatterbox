@@ -26,6 +26,7 @@ library
                      , network-transport
                      , network-transport-tcp
                      , random
+                     , time
   default-language:    Haskell2010
   ghc-options:         -Wall -Werror
 

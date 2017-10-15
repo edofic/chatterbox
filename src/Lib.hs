@@ -16,7 +16,9 @@ import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (eitherDecode')
 import           Data.Binary (Binary)
+import           Data.List (sort)
 import           Data.List (unfoldr)
+import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           GHC.Generics (Generic)
 import           Network.Transport (EndPointAddress(EndPointAddress))
 import           Network.Transport.TCP (createTransport, defaultTCPParameters)
@@ -53,6 +55,7 @@ data LoopConfig = LoopConfig
 data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
               | Running { msgStream :: [(Serial, Double)]
                         , received :: Set.Set RemoteMsg
+                        , sendingTimestamp :: Timestamp
                         }
               | Stopped { received :: Set.Set RemoteMsg }
               | Quitted
@@ -60,9 +63,10 @@ data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
 
 
 type Serial = Integer
+type Timestamp = Integer
 
 data RemoteMsg = Connect P.NodeId
-               | Ping P.NodeId Serial Double
+               | Ping P.NodeId Serial Timestamp Double
                deriving (Eq, Show, Ord, Generic)
 
 data Msg = Incoming RemoteMsg
@@ -139,18 +143,19 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       liftIO $ debugM rootLoggerName "woke up"
       P.nsend "worker" Stop
     let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
-    return $ Running msgStream Set.empty
+    timestamp <- liftIO currentTimeMs
+    return $ Running msgStream Set.empty timestamp
   else return $ state { connectedNodes = connectedNodes' }
   where
     nodeId = case incoming of
       Connect sender -> sender
-      Ping sender _ _ -> sender
+      Ping sender _ _ _ -> sender
 
 update Tick LoopConfig{..} state@Running{..} = do
   let (msgSerial, msg) : msgStream' = msgStream
   forM_ peerList $ \peer -> do
     liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-    P.nsendRemote peer "listener" $ Ping selfNodeId msgSerial msg
+    P.nsendRemote peer "listener" $ Ping selfNodeId sendingTimestamp msgSerial msg
   return $ state { msgStream = msgStream' }
 
 update (Incoming msg) LoopConfig{..} state@Running{} = do
@@ -177,13 +182,16 @@ update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ sho
 
 
 sumUpMessages :: [RemoteMsg] -> (Integer, Double)
-sumUpMessages = go 0 0 where
+sumUpMessages remoteMsgs = go 0 0 $ map snd $ sort $ pings remoteMsgs where
+  pings (Connect{}:msgs) = pings msgs
+  pings ((Ping _ _ timestamp num):msgs) = (timestamp, num) : pings msgs
+  pings [] = []
+
   -- using explicit recursion since tuples are too lazy for foldl' and foldl
   -- (the library) seems like an overkill right now
-  go :: Integer -> Double -> [RemoteMsg] -> (Integer, Double)
-  go !count !scalar ((Ping _ _ value):msgs) =
+  go :: Integer -> Double -> [Double] -> (Integer, Double)
+  go !count !scalar (value:msgs) =
     go (count + 1) (scalar + value * (fromInteger count + 1)) msgs
-  go count scalar (_:msgs) = go count scalar msgs
   go count scalar [] = (count, scalar)
 
 
@@ -208,3 +216,7 @@ runProcess' node process = do
     res <- process
     liftIO $ putMVar var res
   readMVar var
+
+
+currentTimeMs :: IO Timestamp
+currentTimeMs = round . (* 1000) <$> getPOSIXTime
