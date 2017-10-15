@@ -85,7 +85,7 @@ runNode config@(Config {..}) = do
     Left  err       -> error $ show err
 
   selfNodeId <- runProcess' node P.getSelfNode
-  peerList <- loadPeers peersFile selfNodeId
+  peerList <- loadPeers peersFile
 
   runProcess node $ do
     registerReceiver
@@ -102,12 +102,12 @@ runNode config@(Config {..}) = do
     mainLoop loopConfig initialState
 
 
-loadPeers :: FilePath -> P.NodeId -> IO (Set.Set P.NodeId)
-loadPeers peersFile selfNodeId = do
+loadPeers :: FilePath -> IO (Set.Set P.NodeId)
+loadPeers peersFile = do
   rawJson <- BS.readFile peersFile
   case eitherDecode' rawJson of
     Left err -> error $ "Cannot read " ++ peersFile ++ " : " ++ err
-    Right rawPeers -> return $ Set.fromList $ filter (selfNodeId /=) $ map packPeer rawPeers
+    Right rawPeers -> return $ Set.fromList $ map packPeer rawPeers
   where
     packPeer = P.NodeId . EndPointAddress . BSC.pack
 
@@ -131,7 +131,7 @@ update Tick LoopConfig{..} state@Connecting{..} = do
 update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
   liftIO $ debugM rootLoggerName $ "connected to "  ++ show nodeId
   let connectedNodes' = nodeId `Set.insert` connectedNodes
-  if connectedNodes' == Set.delete selfNodeId peerList
+  if connectedNodes' == peerList
   then do
     _ <- P.spawnLocal $ do
       liftIO $ debugM rootLoggerName "sleeping"
