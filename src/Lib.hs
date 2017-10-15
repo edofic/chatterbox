@@ -1,9 +1,12 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Lib
 ( Config(..)
 , runNode
+, sumUpMessages
+, RemoteMsg(..)
 ) where
 
 import           Control.Concurrent (threadDelay)
@@ -167,9 +170,21 @@ update Quit _ Stopped{..} = do
   liftIO $ do
     debugM rootLoggerName "quitting"
     debugM rootLoggerName $ show received
+    print $ sumUpMessages $ Set.toList received
   return Quitted
 
 update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ show state
+
+
+sumUpMessages :: [RemoteMsg] -> (Integer, Double)
+sumUpMessages = go 0 0 where
+  -- using explicit recursion since tuples are too lazy for foldl' and foldl
+  -- (the library) seems like an overkill right now
+  go :: Integer -> Double -> [RemoteMsg] -> (Integer, Double)
+  go !count !scalar ((Ping _ _ value):msgs) =
+    go (count + 1) (scalar + value * (fromInteger count + 1)) msgs
+  go count scalar (_:msgs) = go count scalar msgs
+  go count scalar [] = (count, scalar)
 
 
 registerReceiver :: P.Process ()
