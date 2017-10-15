@@ -13,10 +13,12 @@ import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (eitherDecode')
 import           Data.Binary (Binary)
+import           Data.List (unfoldr)
 import           GHC.Generics (Generic)
 import           Network.Transport (EndPointAddress(EndPointAddress))
 import           Network.Transport.TCP (createTransport, defaultTCPParameters)
 import           System.Log.Logger (debugM, rootLoggerName)
+import           System.Random (mkStdGen, random, randomIO)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
@@ -32,6 +34,7 @@ data Config = Config
   , peersFile :: FilePath
   , sendFor :: Seconds
   , waitFor :: Seconds
+  , withSeed :: Maybe Int
   } deriving (Eq, Show)
 
 
@@ -40,11 +43,12 @@ data LoopConfig = LoopConfig
   , peerList :: Set.Set P.NodeId
   , sendForDelay :: Int
   , waitForDelay :: Int
+  , randomSeed :: Int
   }
 
 
 data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
-              | Running { msgStream :: [Integer]
+              | Running { msgStream :: [(Serial, Double)]
                         , received :: Set.Set RemoteMsg
                         }
               | Stopped { received :: Set.Set RemoteMsg }
@@ -52,8 +56,10 @@ data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
               deriving (Eq, Show)
 
 
+type Serial = Integer
+
 data RemoteMsg = Connect P.NodeId
-               | Ping P.NodeId Integer
+               | Ping P.NodeId Serial Double
                deriving (Eq, Show, Ord, Generic)
 
 data Msg = Incoming RemoteMsg
@@ -84,7 +90,10 @@ runNode config@(Config {..}) = do
       liftIO $ threadDelay 1000000
       P.nsend "worker" Tick
 
-    let loopConfig = LoopConfig selfNodeId peerList (sendFor * 1000000) (waitFor * 1000000)
+    randomSeed <- case withSeed of Just seed -> return seed
+                                   Nothing   -> liftIO randomIO
+
+    let loopConfig = LoopConfig selfNodeId peerList (sendFor * 1000000) (waitFor * 1000000) randomSeed
         initialState = Connecting Set.empty
     P.getSelfPid >>= P.register "worker"
     mainLoop loopConfig initialState
@@ -126,18 +135,19 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       liftIO $ threadDelay sendForDelay
       liftIO $ debugM rootLoggerName "woke up"
       P.nsend "worker" Stop
-    return $ Running [1..] Set.empty
+    let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
+    return $ Running msgStream Set.empty
   else return $ state { connectedNodes = connectedNodes' }
   where
     nodeId = case incoming of
       Connect sender -> sender
-      Ping sender _ -> sender
+      Ping sender _ _ -> sender
 
 update Tick LoopConfig{..} state@Running{..} = do
-  let msg : msgStream' = msgStream
+  let (msgSerial, msg) : msgStream' = msgStream
   forM_ peerList $ \peer -> do
     liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-    P.nsendRemote peer "listener" $ Ping selfNodeId msg
+    P.nsendRemote peer "listener" $ Ping selfNodeId msgSerial msg
   return $ state { msgStream = msgStream' }
 
 update (Incoming msg) LoopConfig{..} state@Running{} = do

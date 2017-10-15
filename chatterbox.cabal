@@ -25,6 +25,7 @@ library
                      , hslogger
                      , network-transport
                      , network-transport-tcp
+                     , random
   default-language:    Haskell2010
   ghc-options:         -Wall -Werror
 

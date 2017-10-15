@@ -29,3 +29,4 @@ configParser = Config
   <*> strOption (long "peer-config-file" <> value "peers.json")
   <*> option auto (long "send-for" <> metavar "l" <> value 10)
   <*> option auto (long "wait-for" <> metavar "k" <> value 1)
+  <*> ((Just <$> option auto (long "with-seed")) <|> pure Nothing)
