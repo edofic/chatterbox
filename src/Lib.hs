@@ -16,7 +16,6 @@ import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (eitherDecode')
 import           Data.Binary (Binary)
-import           Data.List (sort)
 import           Data.List (unfoldr)
 import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           GHC.Generics (Generic)
@@ -54,7 +53,7 @@ data LoopConfig = LoopConfig
 
 data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
               | Running { msgStream :: [(Serial, Double)]
-                        , received :: Set.Set RemoteMsg
+                        , received :: Set.Set (Timestamp, Double)
                         , sendingTimestamp :: Timestamp
                         , stopping :: Bool
                         , acked :: Set.Set P.NodeId
@@ -165,23 +164,22 @@ update Tick LoopConfig{..} state@Running{..}
 
 update (Incoming msg) LoopConfig{..} state@Running{..} = do
   liftIO $ debugM rootLoggerName $ "received: " ++ show msg
-  let state' = state { received = Set.insert msg received }
   case msg of
-    Ping sender serial _ _ -> do
+    Ping sender serial timestamp value -> do
       P.nsendRemote sender "listener" $ Ack selfNodeId serial
-      return state'
+      return $ state { received = Set.insert (timestamp, value) received }
     Ack sender serial | serial == fst (head msgStream) ->
       let acked' = Set.insert sender acked
       in if acked' == peerList
          then do
            timestamp <- liftIO $ currentTimeMs
-           return state' { acked = Set.empty
+           return state { acked = Set.empty
                          , msgStream = tail msgStream
                          , sendingTimestamp = timestamp
                          }
          else
-           return $ state' { acked = acked' }
-    _ -> return state'
+           return $ state { acked = acked' }
+    _ -> return state
 
 update Stop LoopConfig{..} state@Running{..}
   | not stopping = do
@@ -195,18 +193,14 @@ update Quit _ Running{..} | stopping = do
   liftIO $ do
     debugM rootLoggerName "quitting"
     debugM rootLoggerName $ show received
-    print $ sumUpMessages $ Set.toList received
+    print $ sumUpMessages received
   return Quitted
 
 update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ show state
 
 
-sumUpMessages :: [RemoteMsg] -> (Integer, Double)
-sumUpMessages remoteMsgs = go 0 0 $ map snd $ sort $ pings remoteMsgs where
-  pings ((Ping _ _ timestamp num):msgs) = (timestamp, num) : pings msgs
-  pings (_:msgs) = pings msgs
-  pings [] = []
-
+sumUpMessages :: Set.Set (Timestamp, Double) -> (Integer, Double)
+sumUpMessages timestamped = go 0 0 $ map snd $ Set.toList timestamped where
   -- using explicit recursion since tuples are too lazy for foldl' and foldl
   -- (the library) seems like an overkill right now
   go :: Integer -> Double -> [Double] -> (Integer, Double)
