@@ -40,6 +40,7 @@ data Config = Config
   , sendFor :: Seconds
   , waitFor :: Seconds
   , withSeed :: Maybe Int
+  , tickMs :: Int
   } deriving (Eq, Show)
 
 
@@ -97,7 +98,7 @@ runNode config@(Config {..}) = do
   runProcess node $ do
     registerReceiver
     _ <- P.spawnLocal $ forever $ do
-      liftIO $ threadDelay 1000000
+      liftIO $ threadDelay (tickMs * 1000)
       P.nsend "worker" Tick
 
     randomSeed <- case withSeed of Just seed -> return seed
@@ -146,7 +147,7 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       liftIO $ debugM rootLoggerName "woke up"
       P.nsend "worker" Stop
     let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
-    timestamp <- liftIO currentTimeMs
+    timestamp <- liftIO currentTimestamp
     return $ Running msgStream Map.empty Set.empty timestamp False Set.empty
   else return $ state { connectedNodes = connectedNodes' }
   where
@@ -185,7 +186,7 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
       let acked' = Set.insert sender acked
       in if acked' == peerList
          then do
-           timestamp <- liftIO $ currentTimeMs
+           timestamp <- liftIO $ currentTimestamp
            return state { acked = Set.empty
                          , msgStream = tail msgStream
                          , sendingTimestamp = timestamp
@@ -245,5 +246,5 @@ runProcess' node process = do
   readMVar var
 
 
-currentTimeMs :: IO Timestamp
-currentTimeMs = round . (* 1000) <$> getPOSIXTime
+currentTimestamp :: IO Timestamp
+currentTimestamp = round . (* 1000000) <$> getPOSIXTime
