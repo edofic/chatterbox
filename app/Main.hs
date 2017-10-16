@@ -12,13 +12,15 @@ import Lib
 
 main :: IO ()
 main = do
-  logStreamHandler <- streamHandler stderr Logger.DEBUG
+  config <- execParser $ info configParser mempty
+  let logLevel = if verbose config then Logger.DEBUG else Logger.ERROR
+
+  logStreamHandler <- streamHandler stderr logLevel
   let logStreamHandler' = setFormatter logStreamHandler $
                             simpleLogFormatter "[$time $loggername $prio] $msg"
   Logger.updateGlobalLogger Logger.rootLoggerName $
     Logger.setLevel Logger.DEBUG . Logger.setHandlers [logStreamHandler']
 
-  config <- execParser $ info configParser mempty
   runNode config
 
 
@@ -31,3 +33,4 @@ configParser = Config
   <*> option auto (long "wait-for" <> metavar "k" <> value 1)
   <*> ((Just <$> option auto (long "with-seed")) <|> pure Nothing)
   <*> option auto (long "tick-duration" <> metavar "ms" <> value 100)
+  <*> flag False True (long "verbose" <> short 'v')

@@ -41,6 +41,7 @@ data Config = Config
   , waitFor :: Seconds
   , withSeed :: Maybe Int
   , tickMs :: Int
+  , verbose :: Bool
   } deriving (Eq, Show)
 
 
