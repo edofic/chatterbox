@@ -56,8 +56,8 @@ data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
               | Running { msgStream :: [(Serial, Double)]
                         , received :: Set.Set RemoteMsg
                         , sendingTimestamp :: Timestamp
+                        , stopping :: Bool
                         }
-              | Stopped { received :: Set.Set RemoteMsg }
               | Quitted
               deriving (Eq, Show)
 
@@ -144,34 +144,35 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       P.nsend "worker" Stop
     let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
     timestamp <- liftIO currentTimeMs
-    return $ Running msgStream Set.empty timestamp
+    return $ Running msgStream Set.empty timestamp False
   else return $ state { connectedNodes = connectedNodes' }
   where
     nodeId = case incoming of
       Connect sender -> sender
       Ping sender _ _ _ -> sender
 
-update Tick LoopConfig{..} state@Running{..} = do
-  let (msgSerial, msg) : msgStream' = msgStream
-  forM_ peerList $ \peer -> do
-    liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-    P.nsendRemote peer "listener" $ Ping selfNodeId sendingTimestamp msgSerial msg
-  return $ state { msgStream = msgStream' }
+update Tick LoopConfig{..} state@Running{..}
+  | stopping  = return state
+  | otherwise = do
+    let (msgSerial, msg) : msgStream' = msgStream
+    forM_ peerList $ \peer -> do
+      liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
+      P.nsendRemote peer "listener" $ Ping selfNodeId sendingTimestamp msgSerial msg
+    return $ state { msgStream = msgStream' }
 
 update (Incoming msg) LoopConfig{..} state@Running{} = do
   liftIO $ debugM rootLoggerName $ "received: " ++ show msg
   return $ state { received = Set.insert msg (received state) }
 
-update Stop LoopConfig{..} Running{..} = do
-  liftIO $ debugM rootLoggerName $ "stopping"
-  _ <- P.spawnLocal $ do
-    liftIO $ threadDelay waitForDelay
-    P.nsend "worker" Quit
-  return $ Stopped received
+update Stop LoopConfig{..} state@Running{..}
+  | not stopping = do
+    liftIO $ debugM rootLoggerName $ "stopping"
+    _ <- P.spawnLocal $ do
+      liftIO $ threadDelay waitForDelay
+      P.nsend "worker" Quit
+    return $ state{ stopping = True }
 
-update Tick _ state@Stopped{} = return state
-
-update Quit _ Stopped{..} = do
+update Quit _ Running{..} | stopping = do
   liftIO $ do
     debugM rootLoggerName "quitting"
     debugM rootLoggerName $ show received
