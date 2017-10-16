@@ -57,6 +57,7 @@ data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
                         , received :: Set.Set RemoteMsg
                         , sendingTimestamp :: Timestamp
                         , stopping :: Bool
+                        , acked :: Set.Set P.NodeId
                         }
               | Quitted
               deriving (Eq, Show)
@@ -67,6 +68,7 @@ type Timestamp = Integer
 
 data RemoteMsg = Connect P.NodeId
                | Ping P.NodeId Serial Timestamp Double
+               | Ack P.NodeId Serial
                deriving (Eq, Show, Ord, Generic)
 
 data Msg = Incoming RemoteMsg
@@ -144,25 +146,42 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       P.nsend "worker" Stop
     let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
     timestamp <- liftIO currentTimeMs
-    return $ Running msgStream Set.empty timestamp False
+    return $ Running msgStream Set.empty timestamp False Set.empty
   else return $ state { connectedNodes = connectedNodes' }
   where
     nodeId = case incoming of
       Connect sender -> sender
       Ping sender _ _ _ -> sender
+      Ack sender _ -> sender
 
 update Tick LoopConfig{..} state@Running{..}
   | stopping  = return state
   | otherwise = do
-    let (msgSerial, msg) : msgStream' = msgStream
-    forM_ peerList $ \peer -> do
+    let (msgSerial, msg) = head msgStream
+    forM_ (peerList Set.\\ acked) $ \peer -> do
       liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-      P.nsendRemote peer "listener" $ Ping selfNodeId sendingTimestamp msgSerial msg
-    return $ state { msgStream = msgStream' }
+      P.nsendRemote peer "listener" $ Ping selfNodeId msgSerial sendingTimestamp msg
+    return state
 
-update (Incoming msg) LoopConfig{..} state@Running{} = do
+update (Incoming msg) LoopConfig{..} state@Running{..} = do
   liftIO $ debugM rootLoggerName $ "received: " ++ show msg
-  return $ state { received = Set.insert msg (received state) }
+  let state' = state { received = Set.insert msg received }
+  case msg of
+    Ping sender serial _ _ -> do
+      P.nsendRemote sender "listener" $ Ack selfNodeId serial
+      return state'
+    Ack sender serial | serial == fst (head msgStream) ->
+      let acked' = Set.insert sender acked
+      in if acked' == peerList
+         then do
+           timestamp <- liftIO $ currentTimeMs
+           return state' { acked = Set.empty
+                         , msgStream = tail msgStream
+                         , sendingTimestamp = timestamp
+                         }
+         else
+           return $ state' { acked = acked' }
+    _ -> return state'
 
 update Stop LoopConfig{..} state@Running{..}
   | not stopping = do
@@ -184,8 +203,8 @@ update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ sho
 
 sumUpMessages :: [RemoteMsg] -> (Integer, Double)
 sumUpMessages remoteMsgs = go 0 0 $ map snd $ sort $ pings remoteMsgs where
-  pings (Connect{}:msgs) = pings msgs
   pings ((Ping _ _ timestamp num):msgs) = (timestamp, num) : pings msgs
+  pings (_:msgs) = pings msgs
   pings [] = []
 
   -- using explicit recursion since tuples are too lazy for foldl' and foldl
