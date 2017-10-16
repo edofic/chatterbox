@@ -97,9 +97,11 @@ runNode config@(Config {..}) = do
 
   runProcess node $ do
     registerReceiver
-    _ <- P.spawnLocal $ forever $ do
-      liftIO $ threadDelay (tickMs * 1000)
-      P.nsend "worker" Tick
+    _ <- P.spawnLocal $ do
+      P.getSelfPid >>= P.register "ticker"
+      forever $ do
+        _ <- P.expectTimeout (tickMs * 1000) :: P.Process (Maybe ())
+        P.nsend "worker" Tick
 
     randomSeed <- case withSeed of Just seed -> return seed
                                    Nothing   -> liftIO randomIO
@@ -187,6 +189,7 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
       in if acked' == peerList
          then do
            timestamp <- liftIO $ currentTimestamp
+           P.nsend "ticker" ()
            return state { acked = Set.empty
                          , msgStream = tail msgStream
                          , sendingTimestamp = timestamp
