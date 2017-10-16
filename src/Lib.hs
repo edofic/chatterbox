@@ -26,6 +26,7 @@ import           System.Random (mkStdGen, random, randomIO)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
+import qualified Data.Map as Map
 import qualified Data.Set as Set
 
 
@@ -53,6 +54,7 @@ data LoopConfig = LoopConfig
 
 data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
               | Running { msgStream :: [(Serial, Double)]
+                        , buffer :: Map.Map P.NodeId (Timestamp, Double)
                         , received :: Set.Set (Timestamp, Double)
                         , sendingTimestamp :: Timestamp
                         , stopping :: Bool
@@ -145,7 +147,7 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       P.nsend "worker" Stop
     let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
     timestamp <- liftIO currentTimeMs
-    return $ Running msgStream Set.empty timestamp False Set.empty
+    return $ Running msgStream Map.empty Set.empty timestamp False Set.empty
   else return $ state { connectedNodes = connectedNodes' }
   where
     nodeId = case incoming of
@@ -167,7 +169,18 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
   case msg of
     Ping sender serial timestamp value -> do
       P.nsendRemote sender "listener" $ Ack selfNodeId serial
-      return $ state { received = Set.insert (timestamp, value) received }
+      let buffer' = Map.insert sender (timestamp, value) buffer
+          state' = state { buffer = buffer' }
+      case Map.lookup sender buffer of
+        Just buffered@(timestamp', _)
+          | timestamp' < timestamp -> do
+            liftIO $ debugM rootLoggerName $ "commited " ++ show buffered
+            return $ state' { received = Set.insert buffered received }
+          | otherwise -> do
+            return state'
+        Nothing -> do
+          return state'
+
     Ack sender serial | serial == fst (head msgStream) ->
       let acked' = Set.insert sender acked
       in if acked' == peerList
