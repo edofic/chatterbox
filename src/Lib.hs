@@ -116,7 +116,7 @@ runNode config@Config {..} = do
     randomSeed <- case withSeed of Just seed -> return seed
                                    Nothing   -> liftIO randomIO
 
-    let loopConfig = LoopConfig selfNodeId peerList (sendFor * 1000000) (waitFor * 1000000) randomSeed
+    let loopConfig = LoopConfig selfNodeId peerList (sendFor * 1000000) (waitFor * 500000) randomSeed
         initialState = Connecting Set.empty
     P.getSelfPid >>= P.register "worker"
     mainLoop loopConfig initialState
