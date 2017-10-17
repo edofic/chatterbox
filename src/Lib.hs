@@ -1,12 +1,17 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Lib
 ( Config(..)
+, AppState(..)
 , runNode
-, sumUpMessages
+, compact
+, packPeer
 , RemoteMsg(..)
+, Prefix(Prefix)
+, sumUpMessagesSuffix
 ) where
 
 import           Control.Concurrent (threadDelay)
@@ -55,15 +60,19 @@ data LoopConfig = LoopConfig
 
 
 data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
-              | Running { msgStream :: [(Serial, Double)]
-                        , buffer :: Map.Map P.NodeId (Timestamp, Double)
-                        , received :: Set.Set (Timestamp, Double)
-                        , sendingTimestamp :: Timestamp
-                        , stopping :: Bool
-                        , acked :: Set.Set P.NodeId
+              | Running { msgStream :: ![(Serial, Double)]
+                        , buffer :: !(Map.Map P.NodeId (Timestamp, Double))
+                        , received :: !(Set.Set (Timestamp, Double))
+                        , latest :: !(Map.Map P.NodeId Timestamp)
+                        , prefix :: !Prefix
+                        , sendingTimestamp :: !Timestamp
+                        , stopping :: !Bool
+                        , acked :: !(Set.Set P.NodeId)
                         }
               | Quitted
               deriving (Eq, Show)
+
+data Prefix = Prefix !Int !Double !Timestamp deriving (Eq, Show)
 
 
 type Serial = Integer
@@ -119,8 +128,9 @@ loadPeers peersFile = do
   case eitherDecode' rawJson of
     Left err -> error $ "Cannot read " ++ peersFile ++ " : " ++ err
     Right rawPeers -> return $ Set.fromList $ map packPeer rawPeers
-  where
-    packPeer = P.NodeId . EndPointAddress . BSC.pack
+
+packPeer :: String -> P.NodeId
+packPeer = P.NodeId . EndPointAddress . BSC.pack
 
 
 mainLoop :: LoopConfig -> AppState -> P.Process ()
@@ -150,8 +160,10 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       liftIO $ debugM rootLoggerName "woke up"
       P.nsend "worker" Stop
     let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
+        initialLatest = Map.fromList $ zip (Set.toList peerList) (repeat 0)
+        prefix = Prefix 0 0 0
     timestamp <- liftIO currentTimestamp
-    return $ Running msgStream Map.empty Set.empty timestamp False Set.empty
+    return $ Running msgStream Map.empty Set.empty initialLatest prefix timestamp False Set.empty
   else return $ state { connectedNodes = connectedNodes' }
   where
     nodeId = case incoming of
@@ -179,7 +191,10 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
         Just buffered@(timestamp', _)
           | timestamp' < timestamp -> do
             liftIO $ debugM rootLoggerName $ "commited " ++ show buffered
-            return $ state' { received = Set.insert buffered received }
+            return $ compact $ state' { received = Set.insert buffered received
+                                      , latest = Map.insert sender timestamp latest
+                                      }
+
           | otherwise -> do
             return state'
         Nothing -> do
@@ -207,24 +222,36 @@ update Stop LoopConfig{..} state@Running{..}
       P.nsend "worker" Quit
     return $ state{ stopping = True }
 
-update Quit _ Running{..} | stopping = do
-  liftIO $ do
-    debugM rootLoggerName "quitting"
-    debugM rootLoggerName $ show received
-    print $ sumUpMessages received
-  return Quitted
+update Quit _ Running{ received, prefix = Prefix prefixCount prefixSum _ , stopping }
+  | stopping = do
+      liftIO $ do
+        debugM rootLoggerName "quitting"
+        debugM rootLoggerName $ show received
+        print $ sumUpMessagesSuffix prefixCount prefixSum received
+      return Quitted
 
 update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ show state
 
 
-sumUpMessages :: Set.Set (Timestamp, Double) -> (Integer, Double)
-sumUpMessages timestamped = go 0 0 $ map snd $ Set.toList timestamped where
-  -- using explicit recursion since tuples are too lazy for foldl' and foldl
-  -- (the library) seems like an overkill right now
-  go :: Integer -> Double -> [Double] -> (Integer, Double)
-  go !count !scalar (value:msgs) =
-    go (count + 1) (scalar + value * (fromInteger count + 1)) msgs
+-- using explicit recursion since tuples are too lazy for foldl' and foldl
+-- (the library) seems like an overkill right now
+sumUpMessagesSuffix :: Int -> Double -> Set.Set (Timestamp, Double) -> (Int, Double)
+sumUpMessagesSuffix c s entries = go c s $ Set.toList entries where
+  go !count !scalar ((_, value):msgs) =
+    go (count + 1) (scalar + value * (fromIntegral count + 1)) msgs
   go count scalar [] = (count, scalar)
+
+
+compact :: AppState -> AppState
+compact state@Running{ received, latest, prefix=(Prefix prefixCount prefixSum prefixTimestamp) }
+  | prefixTimestamp' > prefixTimestamp = state { received=received', prefix=prefix' }
+  where
+    prefix' = Prefix prefixCount' prefixSum' prefixTimestamp
+    (prefixCount', prefixSum') = sumUpMessagesSuffix prefixCount prefixSum toCompact
+    (toCompact, received') = Set.partition receivedElegible received
+    receivedElegible (timestamp, _) = timestamp <= prefixTimestamp'
+    prefixTimestamp' = minimum (Map.elems latest)
+compact state = state
 
 
 registerReceiver :: P.Process ()
