@@ -135,7 +135,7 @@ packPeer = P.NodeId . EndPointAddress . BSC.pack
 
 mainLoop :: LoopConfig -> AppState -> P.Process ()
 mainLoop _ Quitted = return ()
-mainLoop loopConfig state = do
+mainLoop loopConfig !state = do
   msg <- P.expect
   state' <- update msg loopConfig state
   mainLoop loopConfig state'
