@@ -13,7 +13,7 @@ main = hspec $ do
       property $ \prefixCount prefixSum ->
         sumUpMessagesSuffix prefixCount prefixSum Set.empty == (prefixCount, prefixSum)
 
-    it "counts the elements" $ do
+    it "counts the elements" $
       property $ \numbers ->
         let msgs = Set.fromList $ (\n -> (0, n)) `map` numbers
         in fromIntegral (fst (sumUpMessagesSuffix 0 0 msgs)) == length numbers

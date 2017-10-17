@@ -95,7 +95,7 @@ instance Binary Msg
 
 
 runNode :: Config -> IO ()
-runNode config@(Config {..}) = do
+runNode config@Config {..} = do
   debugM rootLoggerName $ "Using config: " ++ show config
 
   node <- createTransport host port defaultTCPParameters >>= \r -> case r of
@@ -144,7 +144,7 @@ mainLoop loopConfig !state = do
 update :: Msg -> LoopConfig -> AppState -> P.Process AppState
 
 update Tick LoopConfig{..} state@Connecting{..} = do
-  liftIO $ debugM rootLoggerName $ "connecting ... "
+  liftIO $ debugM rootLoggerName "connecting ... "
   forM_ peerList $ \peer ->
     P.nsendRemote peer "listener" $ Connect selfNodeId
   return state
@@ -195,16 +195,14 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
                                       , latest = Map.insert sender timestamp latest
                                       }
 
-          | otherwise -> do
-            return state'
-        Nothing -> do
-          return state'
+          | otherwise -> return state'
+        Nothing -> return state'
 
     Ack sender serial | serial == fst (head msgStream) ->
       let acked' = Set.insert sender acked
       in if acked' == peerList
          then do
-           timestamp <- liftIO $ currentTimestamp
+           timestamp <- liftIO currentTimestamp
            P.nsend "ticker" ()
            return state { acked = Set.empty
                          , msgStream = tail msgStream
@@ -216,7 +214,7 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
 
 update Stop LoopConfig{..} state@Running{..}
   | not stopping = do
-    liftIO $ debugM rootLoggerName $ "stopping"
+    liftIO $ debugM rootLoggerName "stopping"
     _ <- P.spawnLocal $ do
       liftIO $ threadDelay waitForDelay
       P.nsend "worker" Quit
