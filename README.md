@@ -85,3 +85,5 @@ to manually specify nodes) or remote code execution. Instead each node defines
 A loop that runs a reducer over incoming messages and holds the current
 application state. The reducer is the big function that implements the state
 machine of the protocol
+
+![diagram text](https://raw.githubusercontent.com/edofic/chatterbox/master/doc/states.png)

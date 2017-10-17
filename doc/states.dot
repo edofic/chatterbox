@@ -1,0 +1,64 @@
+digraph G {
+  subgraph cluster_worker {
+    label="worker";
+    graph[style=dotted];
+
+    connect [shape="doublecircle",
+             xlabel="Sending connecting messages to all peers.\nReceive connecting messages."];
+    mainloop [label="main loop"];
+    process [shape="diamond", label="process msg"];
+    send [shape="doublecircle", label="broadcast\ncurrent msg"];
+    stop [shape="doublecircle", label="stop the\nticker"];
+    quit [shape="doublecircle"];
+    process_incoming [label="process\nremote", shape="diamond"];
+    process_ping [label="proccess\nping", shape="diamond"];
+    process_ack [label="proccess\nack", shape="diamond"];
+    some_acks [shape="doublecircle", label="save ack"];
+    all_acks [shape="doublecircle", label="clear acks\ncommit msg"];
+    commit_msg [shape="doublecircle", label="commit from buffer\nmsg to buffer"];
+
+
+    connect -> mainloop [label="all peers responded"];
+    mainloop -> process [label="receive msg"];
+
+    process -> stop [label="stop"];
+    stop -> process;
+    process -> send [label="tick"];
+    send -> mainloop;
+    process -> quit [label="quit"];
+    process -> process_incoming [label="incoming"];
+    process_incoming -> process_ping [label="ping"];
+
+    process_incoming -> process_ack [label="ack"];
+    process_ack -> some_acks [label="otherwise"];
+    process_ack -> all_acks [label="eveybody acked"];
+    some_acks -> mainloop;
+    all_acks -> mainloop;
+
+    process_ping -> mainloop [label="old msg"];
+    process_ping -> commit_msg [label="new msg"];
+    commit_msg -> mainloop;
+  }
+
+  subgraph cluster_ticker {
+    label="ticker";
+    graph[style=dotted];
+
+    receive [label="receive tick"];
+    send_tick [label="send tick"];
+    receive -> send_tick [label="woken up"];
+    receive -> send_tick [label="timeout"];
+    send_tick -> mainloop [style="dotted"];
+  }
+
+  subgraph cluster_listener {
+    label="listener";
+    graph[style=dotted];
+    receive_remote [label="receive\nremote"];
+    forward [shape="doublecircle"];
+
+    receive_remote -> forward [label="received"];
+    forward -> receive_remote;
+    forward -> mainloop [label="forward", style="dotted"];
+  }
+}
