@@ -21,13 +21,12 @@ import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (eitherDecode')
 import           Data.Binary (Binary)
-import           Data.List (unfoldr)
 import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           GHC.Generics (Generic)
 import           Network.Transport (EndPointAddress(EndPointAddress))
 import           Network.Transport.TCP (createTransport, defaultTCPParameters)
 import           System.Log.Logger (debugM, rootLoggerName)
-import           System.Random (mkStdGen, random, randomIO)
+import           System.Random (mkStdGen, randomRs, randomIO)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
@@ -36,6 +35,12 @@ import qualified Data.Set as Set
 
 
 type Seconds = Int
+
+precision :: Int
+precision = 10
+
+maxValue :: Integer
+maxValue = product $ replicate precision 10
 
 
 data Config = Config
@@ -60,9 +65,9 @@ data LoopConfig = LoopConfig
 
 
 data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
-              | Running { msgStream :: ![(Serial, Double)]
-                        , buffer :: !(Map.Map P.NodeId (Timestamp, Double))
-                        , received :: !(Set.Set (Timestamp, Double))
+              | Running { msgStream :: ![(Serial, Integer)]
+                        , buffer :: !(Map.Map P.NodeId (Timestamp, Integer))
+                        , received :: !(Set.Set (Timestamp, Integer))
                         , latest :: !(Map.Map P.NodeId Timestamp)
                         , prefix :: !Prefix
                         , sendingTimestamp :: !Timestamp
@@ -72,14 +77,14 @@ data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
               | Quitted
               deriving (Eq, Show)
 
-data Prefix = Prefix !Int !Double !Timestamp deriving (Eq, Show)
+data Prefix = Prefix !Int !Integer !Timestamp deriving (Eq, Show)
 
 
 type Serial = Integer
 type Timestamp = Integer
 
 data RemoteMsg = Connect P.NodeId
-               | Ping P.NodeId Serial Timestamp Double
+               | Ping P.NodeId Serial Timestamp Integer
                | Ack P.NodeId Serial
                deriving (Eq, Show, Ord, Generic)
 
@@ -159,7 +164,7 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
       liftIO $ threadDelay sendForDelay
       liftIO $ debugM rootLoggerName "woke up"
       P.nsend "worker" Stop
-    let msgStream = zip [1..] $ unfoldr (Just . random) (mkStdGen randomSeed)
+    let msgStream = zip [1..] $ randomRs (0, maxValue) (mkStdGen randomSeed)
         initialLatest = Map.fromList $ zip (Set.toList peerList) (repeat 0)
         prefix = Prefix 0 0 0
     timestamp <- liftIO currentTimestamp
@@ -225,7 +230,8 @@ update Quit _ Running{ received, prefix = Prefix prefixCount prefixSum _ , stopp
       liftIO $ do
         debugM rootLoggerName "quitting"
         debugM rootLoggerName $ show received
-        print $ sumUpMessagesSuffix prefixCount prefixSum received
+        putStrLn $ formatResult $
+          sumUpMessagesSuffix prefixCount prefixSum received
       return Quitted
 
 update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ show state
@@ -233,7 +239,7 @@ update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ sho
 
 -- using explicit recursion since tuples are too lazy for foldl' and foldl
 -- (the library) seems like an overkill right now
-sumUpMessagesSuffix :: Int -> Double -> Set.Set (Timestamp, Double) -> (Int, Double)
+sumUpMessagesSuffix :: Int -> Integer -> Set.Set (Timestamp, Integer) -> (Int, Integer)
 sumUpMessagesSuffix c s entries = go c s $ Set.toList entries where
   go !count !scalar ((_, value):msgs) =
     go (count + 1) (scalar + value * (fromIntegral count + 1)) msgs
@@ -250,6 +256,14 @@ compact state@Running{ received, latest, prefix=(Prefix prefixCount prefixSum pr
     receivedElegible (timestamp, _) = timestamp <= prefixTimestamp'
     prefixTimestamp' = minimum (Map.elems latest)
 compact state = state
+
+
+formatResult :: (Int, Integer) -> String
+formatResult (totalCount, totalSum) =
+  "(" ++ show totalCount ++ ", " ++ sumStr ++ ")"
+  where
+  sumStr = whole ++ "." ++ decimal
+  (whole, decimal) = splitAt 10 $ show totalSum
 
 
 registerReceiver :: P.Process ()

@@ -86,4 +86,12 @@ A loop that runs a reducer over incoming messages and holds the current
 application state. The reducer is the big function that implements the state
 machine of the protocol
 
+### Precision
+
+The random numbers sent between the nodes are conceptually fractional number
+but they are encoded in fixed precision using `Integer` type and only formatted
+at the very end for display.
+
+### Diagram
+
 ![diagram text](https://raw.githubusercontent.com/edofic/chatterbox/master/doc/states.png)
