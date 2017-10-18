@@ -1,9 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Lib
+module Chatterbox
 ( Config(..)
 , AppState(..)
 , MsgGen (..)
@@ -15,20 +14,17 @@ module Lib
 , sumUpMessagesSuffix
 ) where
 
-import           Control.Concurrent (threadDelay)
+import           Control.Monad.Trans.Writer.Strict (Writer, runWriter)
 import           Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar)
 import           Control.Distributed.Process.Node (LocalNode, initRemoteTable, runProcess, newLocalNode)
 import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
-import           Control.Monad.Trans.Writer.Strict (Writer, runWriter, tell)
 import           Data.Aeson (eitherDecode')
-import           Data.Binary (Binary)
 import           Data.Time.Clock.POSIX (getPOSIXTime)
-import           GHC.Generics (Generic)
 import           Network.Transport (EndPointAddress(EndPointAddress))
 import           Network.Transport.TCP (createTransport, defaultTCPParameters)
 import           System.Log.Logger (debugM, rootLoggerName)
-import           System.Random (mkStdGen, randomIO, randomR, StdGen)
+import           System.Random (mkStdGen, randomIO)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
@@ -36,103 +32,8 @@ import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 
-
-type Seconds = Int
-
-precision :: Int
-precision = 10
-
-maxValue :: Integer
-maxValue = product $ replicate precision 10
-
-
-data Config = Config
-  { host :: String
-  , port :: String
-  , peersFile :: FilePath
-  , sendFor :: Seconds
-  , waitFor :: Seconds
-  , withSeed :: Maybe Int
-  , tickMs :: Int
-  , verbose :: Bool
-  } deriving (Eq, Show)
-
-
-data LoopConfig = LoopConfig
-  { selfNodeId :: !P.NodeId
-  , peerList :: !(Set.Set P.NodeId)
-  , sendForDelay :: !Int
-  , waitForDelay :: !Int
-  , randomSeed :: !Int
-  , currentTimestamp :: !Timestamp
-  }
-
-
-data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
-              | Running { msgGen :: !MsgGen
-                        , buffer :: !(Map.Map P.NodeId (Timestamp, Integer))
-                        , received :: !(Set.Set (Timestamp, Integer))
-                        , latest :: !(Map.Map P.NodeId Timestamp)
-                        , prefix :: !Prefix
-                        , sendingTimestamp :: !Timestamp
-                        , stopping :: !Bool
-                        , acked :: !(Set.Set P.NodeId)
-                        }
-              | Quitted
-              deriving (Eq, Show)
-
-data Prefix = Prefix !Int !Integer !Timestamp deriving (Eq, Show)
-
-
-type Serial = Integer
-type Timestamp = Integer
-
-data RemoteMsg = Connect P.NodeId
-               | Ping P.NodeId Serial Timestamp Integer
-               | Ack P.NodeId Serial
-               deriving (Eq, Show, Ord, Generic)
-
-data Msg = Incoming RemoteMsg
-         | Tick
-         | Stop
-         | Quit
-         deriving (Eq, Show, Generic)
-
-instance Binary RemoteMsg
-instance Binary Msg
-
-
-data Cmd = Log String
-         | Print String
-         | Send P.NodeId RemoteMsg
-         | TriggerStopTimer
-         | TriggerQuitTimer
-         | WakeUpTicker
-
-cmd :: Cmd -> Writer (Seq.Seq Cmd) ()
-cmd = tell . Seq.singleton
-
-
-data MsgGen = MsgGen !Integer StdGen
-
-instance Eq MsgGen where
-  MsgGen s1 _ == MsgGen s2 _ = s1 == s2
-
-instance Show MsgGen where
-  show (MsgGen s _) = "MsgGen " ++ show s ++ " <gen>"
-
-
-currentSerial :: MsgGen -> Serial
-currentSerial (MsgGen serial _) = serial
-
-genMsg :: MsgGen -> (Serial, Integer)
-genMsg gen = case advance gen of (serial, value, _) -> (serial, value)
-
-advance :: MsgGen -> (Serial, Integer, MsgGen)
-advance (MsgGen serial gen) = (serial, value, msgGen') where
-  (value, gen') = randomR (0, maxValue) gen
-  msgGen' = MsgGen (serial + 1) gen'
-
+import Chatterbox.Types
+import Chatterbox.Cmd
 
 runNode :: Config -> IO ()
 runNode config@Config {..} = do
@@ -282,23 +183,6 @@ compact state@Running{ received, latest, prefix=(Prefix prefixCount prefixSum pr
     receivedElegible (timestamp, _) = timestamp <= prefixTimestamp'
     prefixTimestamp' = minimum (Map.elems latest)
 compact state = state
-
-
-runCmd :: LoopConfig -> Cmd -> P.Process ()
-runCmd _ (Log msg) = liftIO $ debugM rootLoggerName msg
-runCmd _ (Print msg) = liftIO $ putStrLn msg
-runCmd _ (Send nodeId msg) = P.nsendRemote nodeId "listener" msg
-runCmd _ WakeUpTicker = P.nsend "ticker" ()
-runCmd LoopConfig{sendForDelay} TriggerStopTimer = do
-  _ <- P.spawnLocal $ do
-    liftIO $ threadDelay sendForDelay
-    P.nsend "worker" Stop
-  return ()
-runCmd LoopConfig{waitForDelay} TriggerQuitTimer = do
-  _ <- P.spawnLocal $ do
-    liftIO $ threadDelay waitForDelay
-    P.nsend "worker" Quit
-  return ()
 
 
 formatResult :: (Int, Integer) -> String

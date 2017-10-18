@@ -5,11 +5,11 @@ import qualified Control.Distributed.Process as P
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 
-import Lib
+import Chatterbox
 
 main :: IO ()
 main = hspec $ do
-  describe "Lib.sumUpMessagesSuffix" $ do
+  describe "Chatterbox.sumUpMessagesSuffix" $ do
     it "preserves input for empty suffix" $
       property $ \prefixCount prefixSum ->
         sumUpMessagesSuffix prefixCount prefixSum Set.empty == (prefixCount, prefixSum)
@@ -23,7 +23,7 @@ main = hspec $ do
       let msgs = Set.fromList [(2, 8), (5, 5), (0, 1), (1, 6)]
       snd (sumUpMessagesSuffix 0 0 msgs) `shouldBe` 57
 
-  describe "Lib.compact" $ do
+  describe "Chatterbox.compact" $ do
     it "does nothing for non-running" $ do
       let connecting = Connecting Set.empty
       compact connecting `shouldBe` connecting

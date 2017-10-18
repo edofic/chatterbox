@@ -7,7 +7,7 @@ import           System.Log.Handler (setFormatter)
 import           System.Log.Handler.Simple (streamHandler)
 import qualified System.Log.Logger as Logger
 
-import Lib
+import Chatterbox
 
 
 main :: IO ()
