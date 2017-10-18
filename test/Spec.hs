@@ -1,3 +1,4 @@
+import           System.Random (mkStdGen)
 import           Test.Hspec
 import           Test.QuickCheck (property)
 import qualified Control.Distributed.Process as P
@@ -48,7 +49,7 @@ main = hspec $ do
 
 
 emptyRunning :: AppState
-emptyRunning = Running { msgStream = []
+emptyRunning = Running { msgGen = emptyGen
                        , buffer = Map.empty
                        , received = Set.empty
                        , latest = Map.empty
@@ -57,6 +58,10 @@ emptyRunning = Running { msgStream = []
                        , stopping = False
                        , acked = Set.empty
                        }
+
+
+emptyGen :: MsgGen
+emptyGen = MsgGen 1 $ mkStdGen 1
 
 
 nodeId1, nodeId2 :: P.NodeId

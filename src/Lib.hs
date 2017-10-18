@@ -6,6 +6,7 @@
 module Lib
 ( Config(..)
 , AppState(..)
+, MsgGen (..)
 , runNode
 , compact
 , packPeer
@@ -27,7 +28,7 @@ import           GHC.Generics (Generic)
 import           Network.Transport (EndPointAddress(EndPointAddress))
 import           Network.Transport.TCP (createTransport, defaultTCPParameters)
 import           System.Log.Logger (debugM, rootLoggerName)
-import           System.Random (mkStdGen, randomRs, randomIO)
+import           System.Random (mkStdGen, randomIO, randomR, StdGen)
 import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
@@ -68,7 +69,7 @@ data LoopConfig = LoopConfig
 
 
 data AppState = Connecting { connectedNodes :: Set.Set P.NodeId }
-              | Running { msgStream :: ![(Serial, Integer)]
+              | Running { msgGen :: !MsgGen
                         , buffer :: !(Map.Map P.NodeId (Timestamp, Integer))
                         , received :: !(Set.Set (Timestamp, Integer))
                         , latest :: !(Map.Map P.NodeId Timestamp)
@@ -108,9 +109,29 @@ data Cmd = Log String
          | TriggerQuitTimer
          | WakeUpTicker
 
-
 cmd :: Cmd -> Writer (Seq.Seq Cmd) ()
 cmd = tell . Seq.singleton
+
+
+data MsgGen = MsgGen !Integer StdGen
+
+instance Eq MsgGen where
+  MsgGen s1 _ == MsgGen s2 _ = s1 == s2
+
+instance Show MsgGen where
+  show (MsgGen s _) = "MsgGen " ++ show s ++ " <gen>"
+
+
+currentSerial :: MsgGen -> Serial
+currentSerial (MsgGen serial _) = serial
+
+genMsg :: MsgGen -> (Serial, Integer)
+genMsg gen = case advance gen of (serial, value, _) -> (serial, value)
+
+advance :: MsgGen -> (Serial, Integer, MsgGen)
+advance (MsgGen serial gen) = (serial, value, msgGen') where
+  (value, gen') = randomR (0, maxValue) gen
+  msgGen' = MsgGen (serial + 1) gen'
 
 
 runNode :: Config -> IO ()
@@ -174,7 +195,7 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
   if connectedNodes' == peerList
   then do
     cmd TriggerStopTimer
-    let msgStream = zip [1..] $ randomRs (0, maxValue) (mkStdGen randomSeed)
+    let msgStream = MsgGen 1 (mkStdGen randomSeed)
         initialLatest = Map.fromList $ zip (Set.toList peerList) (repeat 0)
         prefix = Prefix 0 0 0
     return $ Running msgStream Map.empty Set.empty initialLatest prefix currentTimestamp False Set.empty -- TODO
@@ -188,7 +209,7 @@ update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
 update Tick LoopConfig{..} state@Running{..}
   | stopping  = return state
   | otherwise = do
-    let (msgSerial, msg) = head msgStream
+    let (msgSerial, msg) = genMsg msgGen
     forM_ (peerList Set.\\ acked) $ \peer -> do
       cmd $ Log $ "sending to " ++ show peer
       cmd $ Send peer $ Ping selfNodeId msgSerial sendingTimestamp msg
@@ -212,13 +233,13 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
           | otherwise -> return state'
         Nothing -> return state'
 
-    Ack sender serial | serial == fst (head msgStream) ->
+    Ack sender serial | serial == currentSerial msgGen ->
       let acked' = Set.insert sender acked
       in if acked' == peerList
          then do
            cmd WakeUpTicker
            return state { acked = Set.empty
-                         , msgStream = tail msgStream
+                         , msgGen = case advance msgGen of (_, _, gen) -> gen
                          , sendingTimestamp = currentTimestamp
                          }
          else
