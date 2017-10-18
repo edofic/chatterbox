@@ -19,6 +19,7 @@ import           Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar)
 import           Control.Distributed.Process.Node (LocalNode, initRemoteTable, runProcess, newLocalNode)
 import           Control.Monad (forever, forM_)
 import           Control.Monad.IO.Class (liftIO)
+import           Control.Monad.Trans.Writer.Strict (Writer, runWriter, tell)
 import           Data.Aeson (eitherDecode')
 import           Data.Binary (Binary)
 import           Data.Time.Clock.POSIX (getPOSIXTime)
@@ -31,6 +32,7 @@ import qualified Control.Distributed.Process as P
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.Map as Map
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 
 
@@ -56,11 +58,12 @@ data Config = Config
 
 
 data LoopConfig = LoopConfig
-  { selfNodeId :: P.NodeId
-  , peerList :: Set.Set P.NodeId
-  , sendForDelay :: Int
-  , waitForDelay :: Int
-  , randomSeed :: Int
+  { selfNodeId :: !P.NodeId
+  , peerList :: !(Set.Set P.NodeId)
+  , sendForDelay :: !Int
+  , waitForDelay :: !Int
+  , randomSeed :: !Int
+  , currentTimestamp :: !Timestamp
   }
 
 
@@ -94,9 +97,20 @@ data Msg = Incoming RemoteMsg
          | Quit
          deriving (Eq, Show, Generic)
 
-
 instance Binary RemoteMsg
 instance Binary Msg
+
+
+data Cmd = Log String
+         | Print String
+         | Send P.NodeId RemoteMsg
+         | TriggerStopTimer
+         | TriggerQuitTimer
+         | WakeUpTicker
+
+
+cmd :: Cmd -> Writer (Seq.Seq Cmd) ()
+cmd = tell . Seq.singleton
 
 
 runNode :: Config -> IO ()
@@ -138,37 +152,32 @@ packPeer :: String -> P.NodeId
 packPeer = P.NodeId . EndPointAddress . BSC.pack
 
 
-mainLoop :: LoopConfig -> AppState -> P.Process ()
+mainLoop :: (Timestamp -> LoopConfig) -> AppState -> P.Process ()
 mainLoop _ Quitted = return ()
-mainLoop loopConfig !state = do
+mainLoop loopConfigF !state = do
   msg <- P.expect
-  state' <- update msg loopConfig state
-  mainLoop loopConfig state'
+  loopConfig <- loopConfigF <$> liftIO getCurrentTimestamp
+  let (state', cmds) = runWriter $ update msg loopConfig state
+  forM_ cmds $ runCmd loopConfig
+  mainLoop loopConfigF state'
 
-
-update :: Msg -> LoopConfig -> AppState -> P.Process AppState
+update :: Msg -> LoopConfig -> AppState -> Writer (Seq.Seq Cmd) AppState
 
 update Tick LoopConfig{..} state@Connecting{..} = do
-  liftIO $ debugM rootLoggerName "connecting ... "
-  forM_ peerList $ \peer ->
-    P.nsendRemote peer "listener" $ Connect selfNodeId
+  cmd $ Log "connecting ..."
+  forM_ peerList $ \peer -> cmd $ Send peer $ Connect selfNodeId
   return state
 
 update (Incoming incoming) LoopConfig{..} state@Connecting{..} = do
-  liftIO $ debugM rootLoggerName $ "connected to "  ++ show nodeId
+  cmd $ Log $ "connected to "  ++ show nodeId
   let connectedNodes' = nodeId `Set.insert` connectedNodes
   if connectedNodes' == peerList
   then do
-    _ <- P.spawnLocal $ do
-      liftIO $ debugM rootLoggerName "sleeping"
-      liftIO $ threadDelay sendForDelay
-      liftIO $ debugM rootLoggerName "woke up"
-      P.nsend "worker" Stop
+    cmd TriggerStopTimer
     let msgStream = zip [1..] $ randomRs (0, maxValue) (mkStdGen randomSeed)
         initialLatest = Map.fromList $ zip (Set.toList peerList) (repeat 0)
         prefix = Prefix 0 0 0
-    timestamp <- liftIO currentTimestamp
-    return $ Running msgStream Map.empty Set.empty initialLatest prefix timestamp False Set.empty
+    return $ Running msgStream Map.empty Set.empty initialLatest prefix currentTimestamp False Set.empty -- TODO
   else return $ state { connectedNodes = connectedNodes' }
   where
     nodeId = case incoming of
@@ -181,21 +190,21 @@ update Tick LoopConfig{..} state@Running{..}
   | otherwise = do
     let (msgSerial, msg) = head msgStream
     forM_ (peerList Set.\\ acked) $ \peer -> do
-      liftIO $ debugM rootLoggerName $ "sending to " ++ show peer
-      P.nsendRemote peer "listener" $ Ping selfNodeId msgSerial sendingTimestamp msg
+      cmd $ Log $ "sending to " ++ show peer
+      cmd $ Send peer $ Ping selfNodeId msgSerial sendingTimestamp msg
     return state
 
 update (Incoming msg) LoopConfig{..} state@Running{..} = do
-  liftIO $ debugM rootLoggerName $ "received: " ++ show msg
+  cmd $ Log $ "received: " ++ show msg
   case msg of
     Ping sender serial timestamp value -> do
-      P.nsendRemote sender "listener" $ Ack selfNodeId serial
+      cmd $ Send sender $ Ack selfNodeId serial
       let buffer' = Map.insert sender (timestamp, value) buffer
           state' = state { buffer = buffer' }
       case Map.lookup sender buffer of
         Just buffered@(timestamp', _)
           | timestamp' < timestamp -> do
-            liftIO $ debugM rootLoggerName $ "commited " ++ show buffered
+            cmd $ Log $ "commited " ++ show buffered
             return $ compact $ state' { received = Set.insert buffered received
                                       , latest = Map.insert sender timestamp latest
                                       }
@@ -207,11 +216,10 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
       let acked' = Set.insert sender acked
       in if acked' == peerList
          then do
-           timestamp <- liftIO currentTimestamp
-           P.nsend "ticker" ()
+           cmd WakeUpTicker
            return state { acked = Set.empty
                          , msgStream = tail msgStream
-                         , sendingTimestamp = timestamp
+                         , sendingTimestamp = currentTimestamp
                          }
          else
            return $ state { acked = acked' }
@@ -219,19 +227,16 @@ update (Incoming msg) LoopConfig{..} state@Running{..} = do
 
 update Stop LoopConfig{..} state@Running{..}
   | not stopping = do
-    liftIO $ debugM rootLoggerName "stopping"
-    _ <- P.spawnLocal $ do
-      liftIO $ threadDelay waitForDelay
-      P.nsend "worker" Quit
+    cmd $ Log "stopping"
+    cmd TriggerQuitTimer
     return $ state{ stopping = True }
 
 update Quit _ Running{ received, prefix = Prefix prefixCount prefixSum _ , stopping }
   | stopping = do
-      liftIO $ do
-        debugM rootLoggerName "quitting"
-        debugM rootLoggerName $ show received
-        putStrLn $ formatResult $
-          sumUpMessagesSuffix prefixCount prefixSum received
+      cmd $ Log "quitting"
+      cmd $ Log $ show received
+      cmd $ Print $ formatResult $
+        sumUpMessagesSuffix prefixCount prefixSum received
       return Quitted
 
 update msg _ state = error $ "unexpected message: " ++ show msg ++ " in " ++ show state
@@ -256,6 +261,23 @@ compact state@Running{ received, latest, prefix=(Prefix prefixCount prefixSum pr
     receivedElegible (timestamp, _) = timestamp <= prefixTimestamp'
     prefixTimestamp' = minimum (Map.elems latest)
 compact state = state
+
+
+runCmd :: LoopConfig -> Cmd -> P.Process ()
+runCmd _ (Log msg) = liftIO $ debugM rootLoggerName msg
+runCmd _ (Print msg) = liftIO $ putStrLn msg
+runCmd _ (Send nodeId msg) = P.nsendRemote nodeId "listener" msg
+runCmd _ WakeUpTicker = P.nsend "ticker" ()
+runCmd LoopConfig{sendForDelay} TriggerStopTimer = do
+  _ <- P.spawnLocal $ do
+    liftIO $ threadDelay sendForDelay
+    P.nsend "worker" Stop
+  return ()
+runCmd LoopConfig{waitForDelay} TriggerQuitTimer = do
+  _ <- P.spawnLocal $ do
+    liftIO $ threadDelay waitForDelay
+    P.nsend "worker" Quit
+  return ()
 
 
 formatResult :: (Int, Integer) -> String
@@ -289,5 +311,5 @@ runProcess' node process = do
   readMVar var
 
 
-currentTimestamp :: IO Timestamp
-currentTimestamp = round . (* 1000000) <$> getPOSIXTime
+getCurrentTimestamp :: IO Timestamp
+getCurrentTimestamp = round . (* 1000000) <$> getPOSIXTime
