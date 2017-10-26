@@ -1,0 +1,116 @@
+digraph G {
+  node[shape="record"];
+
+  s1 [label="{ A | { a1 | [] | []} | __ __ }| { B | { b1 | [] | []} | __ __  } "];
+  s2 [label="{ A | { a1 | [] | []} | __ __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s3 [label="{ A | { a1 | [] | []} | a1 __ }| { B | { b1 | [] | []} | __ __  } "];
+  s4 [label="{ A | { a1 | [] | [A]} | a1 __ }| { B | { b1 | [] | []} | __ __  } "];
+  s5 [label="{ A | { a1 | [] | [B]} | __ __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s6 [label="{ A | { a1 | [] | [A]} | a1 __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s7 [label="{ A | { a1 | [] | [B]} | a1 __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s8 [label="{ A | { a2 | [] | []} | a1 __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s9 [label="{ A | { a2 | [a1] | []} | a2 __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s10 [label="{ A | { a2 | [] | []} | a1 __ }| { B | { b1 | [a1] | []} | a2 __  } "];
+  s11 [label="{ A | { a1 | [] | []} | a1 __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s12 [label="{ A | { a1 | [] | [A]} | a1 __ }| { B | { b1 | [] | []} | a1 __  } "];
+  s13 [label="{ A | { a1 | [] | [B]} | a1 __ }| { B | { b1 | [] | []} | a1 __  } "];
+
+  d13 [shape="diamond", label="?"];
+  s1 -> d13 [label="A -> A (a1)"];
+  d13 -> s3 [label="&#10003;"];
+  d13 -> s1 [label="&#10060;"];
+
+  d12 [shape="diamond", label="?"];
+  s1 -> d12 [label="A -> B (a1)"];
+  d12 -> s2 [label="&#10003;"];
+  d12 -> s1 [label="&#10060;"];
+
+  d34 [shape="diamond", label="?"];
+  s3 -> d34 [label="A -> A (ack a1)"];
+  d34 -> s3 [label="&#10060;"];
+  d34 -> s4 [label="&#10003;"];
+
+  d25 [shape="diamond", label="?"];
+  s2 -> d25 [label="B -> A (ack a1)"];
+  d25 -> s2 [label="&#10060;"];
+  d25 -> s5 [label="&#10003;"];
+
+  d46 [shape="diamond", label="?"];
+  s4 -> d46 [label="A -> B (a1)"];
+  d46 -> s4 [label="&#10060;"];
+  d46 -> s6 [label="&#10003;"];
+
+  d57 [shape="diamond", label="?"];
+  s5 -> d57 [label="A -> A (a1)"];
+  d57 -> s5 [label="&#10060;"];
+  d57 -> s7 [label="&#10003;"];
+
+  d68 [shape="diamond", label="?"];
+  s6 -> d68 [label="B -> A (ack a1)"];
+  d68 -> s6 [label="&#10060;"];
+  d68 -> s8 [label="&#10003;"];
+
+  d78 [shape="diamond", label="?"];
+  s7 -> d78 [label="B -> A (ack a1)"];
+  d78 -> s7 [label="&#10060;"];
+  d78 -> s8 [label="&#10003;"];
+
+  d89 [shape="diamond", label="?"];
+  s8 -> d89 [label="A -> A (a1)"];
+  d89 -> s8 [label="&#10060;"];
+  d89 -> s9 [label="&#10003;"];
+
+  d910 [shape="diamond", label="?"];
+  s8 -> d910 [label="A -> B (a1)"];
+  d910 -> s8 [label="&#10060;"];
+  d910 -> s10 [label="&#10003;"];
+
+  s3 -> s3 [label="(A -> A (a1)"];
+  s2 -> s2 [label="(A -> B (a1)"];
+
+  d311 [shape="diamond", label="?"];
+  s3 -> d311 [label="A -> B (a1)"];
+  d311 -> s3 [label="&#10060;"];
+  d311 -> s11 [label="&#10003;"];
+  d311 [shape="diamond", label="?"];
+
+  d211 [label="?"];
+  s2 -> d211 [label="A -> A (a1)"];
+  d211 -> s2 [label="&#10060;"];
+  d211 -> s11 [label="&#10003;"];
+
+  d1112 [label="?"];
+  s11 -> d1112 [label="A -> A (ack a1)"];
+  d1112 -> s11 [label="&#10060;"];
+  d1112 -> s12 [label="&#10003;"];
+
+  d1113 [label="?"];
+  s11 -> d1113 [label="B -> A (ack a1)"];
+  d1113 -> s11 [label="&#10060;"];
+  d1113 -> s13 [label="&#10003;"];
+
+  d128 [label="?"];
+  s12 -> d128 [label="B -> A (ack a1)"];
+  d128 -> s12 [label="&#10060;"];
+  d128 -> s8 [label="&#10003;"];
+
+  d138 [label="?"];
+  s13 -> d138 [label="A -> A (ack a1)"];
+  d138 -> s13 [label="&#10060;"];
+  d138 -> s8 [label="&#10003;"];
+
+  s4 -> s4 [label="A -> A (a1)"];
+  s5 -> s5 [label="A -> B (a1)"];
+
+  s11 -> s11 [label="A -> A (a1)"];
+  s11 -> s11 [label="A -> B (a1)"];
+
+  s6 -> s6 [label="A -> A (a1)"];
+  s6 -> s6 [label="A -> B (a1)"];
+  s7 -> s7 [label="A -> A (a1)"];
+  s7 -> s7 [label="A -> B (a1)"];
+  s12 -> s12 [label="A -> A (a1)"];
+  s12 -> s12 [label="A -> B (a1)"];
+  s13 -> s13 [label="A -> A (a1)"];
+  s13 -> s13 [label="A -> B (a1)"];
+}

@@ -1,0 +1,33 @@
+digraph G {
+  label="No connectivity between B and D";
+
+  subgraph cluster_1 {
+    label="1.";
+    graph[style=dotted];
+    a1 [label="A"];
+    b1 [label="B"];
+    c1 [label="C"];
+    a1 -> b1 [label="Connect"];
+    a1 -> c1 [label="Connect"];
+  }
+
+  subgraph cluster_2 {
+    label="2.";
+    graph[style=dotted];
+    a2 [label="A"];
+    b2 [label="B"];
+    c2 [label="C"];
+    b2 -> a2 [label="Connect"];
+    c2 -> a2 [label="Connect"];
+  }
+
+  subgraph cluster_3 {
+    label="3. A starts too soon";
+    graph[style=dotted];
+    a3 [label="A"];
+    b3 [label="B"];
+    c3 [label="C"];
+    a3 -> b3 [label="Ping"];
+    a3 -> c3 [label="Ping"];
+  }
+}
